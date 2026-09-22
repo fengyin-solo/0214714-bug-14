@@ -1,10 +1,10 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="modelValue" class="modal-overlay" @click.self="closeOnOverlay && close()">
+      <div v-if="modelValue" class="modal-overlay" @click.self="closeOnOverlay && !loading && close()">
         <div class="modal-container" :class="[size, { 'has-icon': icon }]">
           <!-- Close Button -->
-          <button v-if="showClose" class="modal-close" @click="close">
+          <button v-if="showClose" class="modal-close" :disabled="loading" @click="close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/>
               <line x1="6" y1="6" x2="18" y2="18"/>
@@ -55,7 +55,7 @@
               <button v-if="showCancel" class="btn-cancel" @click="close">
                 {{ cancelText }}
               </button>
-              <button class="btn-confirm" :class="confirmType" :disabled="confirmDisabled" @click="confirm">
+              <button class="btn-confirm" :class="confirmType" :disabled="confirmDisabled || loading" @click="confirm">
                 <span v-if="loading" class="btn-loading"></span>
                 <span>{{ confirmText }}</span>
               </button>
@@ -90,10 +90,13 @@ export default {
   emits: ['update:modelValue', 'confirm', 'cancel'],
   methods: {
     close() {
+      // 异步处理进行中（如支付）时禁止关闭，防止中途打断导致状态错乱
+      if (this.loading) return
       this.$emit('update:modelValue', false)
       this.$emit('cancel')
     },
     confirm() {
+      if (this.loading) return
       this.$emit('confirm')
     }
   }
@@ -161,6 +164,11 @@ export default {
 .modal-close svg {
   width: 18px;
   height: 18px;
+}
+
+.modal-close:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .modal-icon {

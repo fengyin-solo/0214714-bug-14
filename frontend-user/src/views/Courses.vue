@@ -196,7 +196,7 @@
     <Toast v-model="showToast" :type="toastType" :title="toastTitle" :message="toastMessage" />
 
     <!-- Login Modal -->
-    <LoginModal v-model="showLoginModal" @login-success="onLoginSuccess" />
+    <LoginModal v-model="showLoginModal" @success="onLoginSuccess" />
 
     <!-- My Courses Modal -->
     <Modal v-model="showMyCoursesModal" title="我的课程" size="medium" :show-footer="false">

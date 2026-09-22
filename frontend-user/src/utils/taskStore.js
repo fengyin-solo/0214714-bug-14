@@ -29,6 +29,9 @@ const taskTypeConfig = {
       completed: [
         { key: 'view', label: '查看结果', type: 'default' },
         { key: 'rebook', label: '再次预约', type: 'primary', route: '/tables' }
+      ],
+      cancelled: [
+        { key: 'rebook', label: '再次预约', type: 'primary', route: '/tables' }
       ]
     }
   },
@@ -49,6 +52,9 @@ const taskTypeConfig = {
       completed: [
         { key: 'view', label: '查看结果', type: 'default' },
         { key: 'review', label: '评价', type: 'primary' }
+      ],
+      cancelled: [
+        { key: 'view', label: '查看详情', type: 'default', route: '/courses' }
       ]
     }
   },
@@ -68,6 +74,9 @@ const taskTypeConfig = {
       ],
       completed: [
         { key: 'view', label: '查看结果', type: 'default', route: '/competitions' }
+      ],
+      cancelled: [
+        { key: 'view', label: '查看详情', type: 'default', route: '/competitions' }
       ]
     }
   },
@@ -91,6 +100,9 @@ const taskTypeConfig = {
         { key: 'view', label: '查看结果', type: 'default', route: '/shop' },
         { key: 'review', label: '评价', type: 'primary' },
         { key: 'rebuy', label: '再次购买', type: 'default', route: '/shop' }
+      ],
+      cancelled: [
+        { key: 'rebuy', label: '再次购买', type: 'primary', route: '/shop' }
       ]
     }
   }
@@ -166,7 +178,11 @@ function getDefaultTasks() {
       amount: 2999,
       status: 'pending_shipment',
       createdAt: formatDate(new Date(Date.now() - 172800000)),
-      extra: { orderNo: 'SP' + Date.now().toString().slice(-8), productId: 1 }
+      extra: {
+        orderNo: 'SP' + Date.now().toString().slice(-8),
+        items: [{ id: 1, name: 'LP专业斯诺克球杆', brand: 'LP', price: 2999, icon: '🏏', qty: 1 }],
+        createTime: formatDate(new Date(Date.now() - 172800000))
+      }
     }
   ]
 }
@@ -210,7 +226,8 @@ export const taskStore = {
       return tasks.filter(t => t.status !== 'completed' && t.status !== 'cancelled')
     }
     if (status === 'completed') {
-      return tasks.filter(t => t.status === 'completed')
+      // 已完成与已取消都属于结束态，统一在「已完成」页签中展示（保留记录不丢失）
+      return tasks.filter(t => t.status === 'completed' || t.status === 'cancelled')
     }
     return tasks
   },
@@ -218,6 +235,15 @@ export const taskStore = {
   getById(taskId) {
     const tasks = loadTasks()
     const task = tasks.find(t => t.id === taskId)
+    return task ? enrichTask(task) : null
+  },
+
+  /**
+   * 按订单号查找任务
+   */
+  findByOrderNo(orderNo) {
+    const tasks = loadTasks()
+    const task = tasks.find(t => t.extra && t.extra.orderNo === orderNo)
     return task ? enrichTask(task) : null
   },
 
@@ -321,13 +347,14 @@ export const taskStore = {
     return this.add({
       type: 'order',
       title: order.items.map(i => i.name).join('、'),
-      subtitle: '已下单，待发货',
+      subtitle: order.status === 'pending_payment' ? '等待付款' : '已下单，待发货',
       amount: order.amount,
-      status: 'pending_shipment',
+      status: order.status || 'pending_shipment',
       extra: {
         orderNo: order.orderNo,
         items: order.items,
-        createTime: order.createTime
+        createTime: order.createTime,
+        requestId: order.requestId
       }
     })
   },
@@ -335,10 +362,15 @@ export const taskStore = {
   markAsPaid(taskId) {
     const task = this.getById(taskId)
     if (!task) return null
-    
+    if (task.status !== 'pending_payment') {
+      // 已支付/已取消的任务不允许重复支付
+      logger.warn('任务状态不允许支付', taskId, task.status)
+      return task
+    }
+
     let newStatus = 'upcoming'
     let newSubtitle = '支付成功'
-    
+
     if (task.type === 'order') {
       newStatus = 'pending_shipment'
       newSubtitle = '支付成功，待发货'
@@ -347,8 +379,33 @@ export const taskStore = {
     } else if (task.type === 'booking') {
       newSubtitle = '支付成功，等待使用'
     }
-    
+
     return this.update(taskId, { status: newStatus, subtitle: newSubtitle })
+  },
+
+  /**
+   * 取消任务：将状态置为「已取消」而不是删除记录，
+   * 保证取消的订单/预约仍可在「已完成」页签中查到
+   */
+  cancelTask(taskId) {
+    const task = this.getById(taskId)
+    if (!task) return null
+    if (task.status === 'cancelled') return task
+    if (task.status === 'completed') {
+      logger.warn('已完成的任务不能取消', taskId)
+      return null
+    }
+
+    const subtitleMap = {
+      booking: '已取消预约',
+      course: '已取消报名',
+      competition: '已取消报名',
+      order: '订单已取消'
+    }
+    return this.update(taskId, {
+      status: 'cancelled',
+      subtitle: subtitleMap[task.type] || '已取消'
+    })
   },
 
   getPendingCount() {

@@ -38,14 +38,19 @@
         </div>
 
         <div class="products-grid">
-          <div v-for="product in sortedProducts" :key="product.id" class="product-card" @click="openProductDetail(product)">
+          <div v-for="product in sortedProducts" :key="product.id" class="product-card" :class="{ 'sold-out': product.stock <= 0 }" @click="openProductDetail(product)">
             <div class="product-image">
               <div class="image-placeholder">{{ product.icon }}</div>
               <div class="product-badges">
+                <span v-if="product.stock <= 0" class="badge out">已售罄</span>
                 <span v-if="product.hot" class="badge hot">热销</span>
                 <span v-if="product.new" class="badge new">新品</span>
               </div>
-              <button class="quick-add" @click.stop="quickAddToCart(product)">
+              <button
+                v-if="product.stock > 0"
+                class="quick-add"
+                @click.stop="quickAddToCart(product)"
+              >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
               </button>
             </div>
@@ -58,7 +63,7 @@
                   <span class="current-price">¥{{ product.price }}</span>
                   <span v-if="product.originalPrice" class="original-price">¥{{ product.originalPrice }}</span>
                 </div>
-                <span class="sales">已售 {{ product.sales }}</span>
+                <span class="sales">{{ product.stock > 0 ? `库存 ${product.stock}` : '已售罄' }}</span>
               </div>
             </div>
           </div>
@@ -67,13 +72,13 @@
     </div>
 
     <!-- Cart Float -->
-    <div v-if="cart.length > 0" class="cart-float" @click="showCartModal = true">
+    <div v-if="cartItems.length > 0" class="cart-float" @click="openCartModal">
       <div class="cart-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
           <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
         </svg>
-        <span class="cart-count">{{ cart.length }}</span>
+        <span class="cart-count">{{ cartCount }}</span>
       </div>
       <div class="cart-total">¥{{ cartTotal }}</div>
     </div>
@@ -91,22 +96,25 @@
           <div class="detail-specs">
             <div class="spec-item"><span class="label">分类</span><span class="value">{{ getCategoryName(selectedProduct.category) }}</span></div>
             <div class="spec-item"><span class="label">销量</span><span class="value">{{ selectedProduct.sales }}件</span></div>
+            <div class="spec-item"><span class="label">库存</span><span class="value" :class="{ 'stock-out': selectedProduct.stock <= 0 }">{{ selectedProduct.stock > 0 ? selectedProduct.stock + '件' : '已售罄' }}</span></div>
           </div>
           <div class="detail-price">
             <span class="current">¥{{ selectedProduct.price }}</span>
             <span v-if="selectedProduct.originalPrice" class="original">¥{{ selectedProduct.originalPrice }}</span>
           </div>
-          <div class="quantity-selector">
+          <div v-if="selectedProduct.stock > 0" class="quantity-selector">
             <span class="qty-label">数量</span>
             <div class="qty-controls">
-              <button @click="quantity > 1 && quantity--">-</button>
+              <button :disabled="quantity <= 1" @click="changeDetailQty(-1)">-</button>
               <span>{{ quantity }}</span>
-              <button @click="quantity++">+</button>
+              <button :disabled="quantity >= selectedProduct.stock" @click="changeDetailQty(1)">+</button>
             </div>
           </div>
           <div class="detail-actions">
-            <button class="btn-add-cart" @click="addToCartFromDetail">加入购物车</button>
-            <button class="btn-buy-now" @click="buyNow">立即购买</button>
+            <button class="btn-add-cart" :disabled="selectedProduct.stock <= 0" @click="addToCartFromDetail">
+              {{ selectedProduct.stock > 0 ? '加入购物车' : '已售罄' }}
+            </button>
+            <button class="btn-buy-now" :disabled="selectedProduct.stock <= 0" @click="buyNow">立即购买</button>
           </div>
         </div>
       </div>
@@ -115,30 +123,47 @@
     <!-- Cart Modal -->
     <Modal v-model="showCartModal" title="购物车" size="medium" :show-footer="false">
       <div class="cart-content">
-        <div v-if="cart.length > 0" class="cart-items">
-          <div v-for="(item, index) in cart" :key="index" class="cart-item">
+        <div v-if="cartItems.length > 0" class="cart-items">
+          <div class="cart-toolbar">
+            <span>共 {{ cartCount }} 件商品</span>
+            <button class="btn-clear-cart" @click="clearCart">清空购物车</button>
+          </div>
+          <div v-for="item in cartItems" :key="item.id" class="cart-item">
             <div class="item-icon">{{ item.icon }}</div>
-            <div class="item-info"><h4>{{ item.name }}</h4><span class="item-brand">{{ item.brand }}</span></div>
-            <div class="item-qty">x{{ item.qty }}</div>
+            <div class="item-info"><h4>{{ item.name }}</h4><span class="item-brand">{{ item.brand }} · 库存 {{ item.stock ?? '充足' }}</span></div>
+            <div class="cart-qty-controls">
+              <button :disabled="item.qty <= 1" @click="decreaseCartQty(item)">-</button>
+              <span>{{ item.qty }}</span>
+              <button :disabled="isCartQtyMax(item)" @click="increaseCartQty(item)">+</button>
+            </div>
             <div class="item-price">¥{{ item.price * item.qty }}</div>
-            <button class="remove-btn" @click="removeFromCart(index)">
+            <button class="remove-btn" title="移除" @click="removeFromCart(item.id)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
             </button>
           </div>
         </div>
-        <div v-else class="cart-empty"><div class="empty-icon">🛒</div><p>购物车是空的</p></div>
-        <div v-if="cart.length > 0" class="cart-footer">
-          <div class="cart-summary"><span>共 {{ cartItemCount }} 件商品</span><span class="total">合计：<strong>¥{{ cartTotal }}</strong></span></div>
-          <button class="btn-checkout" @click="checkout">去结算</button>
+        <div v-else class="cart-empty"><div class="empty-icon">🛒</div><p>购物车是空的</p><p class="empty-tip">去挑选心仪的装备吧</p></div>
+        <div v-if="cartItems.length > 0" class="cart-footer">
+          <div class="cart-summary"><span>共 {{ cartCount }} 件商品</span><span class="total">合计：<strong>¥{{ cartTotal }}</strong></span></div>
+          <button class="btn-checkout" :disabled="submitting" @click="checkout">去结算</button>
         </div>
       </div>
     </Modal>
 
     <!-- Checkout Modal -->
-    <Modal v-model="showCheckoutModal" icon="🛒" icon-type="info" title="确认订单" size="small" confirm-text="确认支付" :loading="checkoutLoading" @confirm="confirmCheckout">
+    <Modal v-model="showCheckoutModal" icon="🛒" icon-type="info" title="确认订单" size="small" confirm-text="确认支付" :loading="submitting" @confirm="confirmCheckout">
       <div class="checkout-info">
-        <div class="info-row"><span class="label">商品数量</span><span class="value">{{ cartItemCount }} 件</span></div>
-        <div class="info-row total"><span class="label">应付金额</span><span class="value price">¥{{ cartTotal }}</span></div>
+        <div class="checkout-goods">
+          <div v-for="item in checkoutItems" :key="item.id" class="checkout-goods-item">
+            <span class="item-icon">{{ item.icon }}</span>
+            <span class="goods-name">{{ item.name }}</span>
+            <span class="goods-qty">x{{ item.qty }}</span>
+            <span class="goods-price">¥{{ item.price * item.qty }}</span>
+          </div>
+        </div>
+        <div class="info-row"><span class="label">商品数量</span><span class="value">{{ checkoutCount }} 件</span></div>
+        <div class="info-row total"><span class="label">应付金额</span><span class="value price">¥{{ checkoutTotal }}</span></div>
+        <p v-if="submitError" class="checkout-error">{{ submitError }}</p>
       </div>
     </Modal>
 
@@ -146,6 +171,7 @@
     <Modal v-model="showSuccessModal" icon="🎉" icon-type="success" title="支付成功" subtitle="您的订单已提交" size="small" :show-cancel="false" confirm-text="查看订单" @confirm="viewOrderDetail">
       <div v-if="orderResult" class="success-info">
         <div class="info-row"><span class="label">订单编号</span><span class="value">{{ orderResult.orderNo }}</span></div>
+        <div class="info-row"><span class="label">商品数量</span><span class="value">{{ orderItemCount }} 件</span></div>
         <div class="info-row"><span class="label">支付金额</span><span class="value">¥{{ orderResult.amount }}</span></div>
       </div>
     </Modal>
@@ -157,7 +183,7 @@
           <div v-for="order in orders" :key="order.orderNo" class="order-card">
             <div class="order-header">
               <span class="order-no">{{ order.orderNo }}</span>
-              <span class="order-status paid">已支付</span>
+              <span class="order-status" :class="order.status">{{ orderStatusText(order.status) }}</span>
             </div>
             <div class="order-items">
               <div v-for="item in order.items" :key="item.id" class="order-item">
@@ -181,7 +207,7 @@
 
     <Toast v-model="showToast" :type="toastType" :title="toastTitle" :message="toastMessage" />
 
-    <LoginModal v-model="showLoginModal" @login-success="onLoginSuccess" />
+    <LoginModal v-model="showLoginModal" @success="onLoginSuccess" />
   </div>
 </template>
 
@@ -190,7 +216,12 @@ import Modal from '../components/Modal.vue'
 import Toast from '../components/Toast.vue'
 import LoginModal from '../components/LoginModal.vue'
 import { isAuthenticated } from '../utils/auth'
-import { taskStore } from '../utils/taskStore'
+import { api } from '../utils/api'
+import { cartStore } from '../utils/cartStore'
+
+function genRequestId() {
+  return 'REQ' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+}
 
 export default {
   name: 'Shop',
@@ -203,13 +234,16 @@ export default {
       showCartModal: false,
       showCheckoutModal: false,
       showSuccessModal: false,
-      checkoutLoading: false,
+      submitting: false, // 支付提交中（弹窗期间禁止重复支付/关闭）
+      submitError: '',
       selectedProduct: null,
       quantity: 1,
-      cart: [],
       orderResult: null,
-      orders: [], // 订单列表
+      orders: [], // 订单列表（来自订单接口，与任务中心同源）
       showOrdersModal: false, // 订单列表弹框
+      checkoutItems: [], // 本次结算的商品快照（购物车结算 / 立即购买）
+      checkoutSource: 'cart', // cart | buyNow
+      checkoutRequestId: null, // 本次结算的幂等请求标识
       showToast: false,
       toastType: 'success',
       toastTitle: '',
@@ -224,15 +258,16 @@ export default {
         { id: 'accessory', name: '配件', icon: '🔧' },
         { id: 'clothing', name: '服装', icon: '👔' }
       ],
+      // 首屏兜底数据，挂载后会以接口返回（含最新库存）为准
       products: [
-        { id: 1, name: 'LP专业斯诺克球杆', brand: 'LP', price: 2999, originalPrice: 3599, category: 'cue', icon: '🏏', description: '进口白蜡木杆身，专业级配置', sales: 328, hot: true },
-        { id: 2, name: 'Predator美式九球杆', brand: 'Predator', price: 4599, category: 'cue', icon: '🏏', description: '碳纤维前节，低偏转技术', sales: 156, new: true },
-        { id: 3, name: '星牌比赛用球', brand: '星牌', price: 1299, originalPrice: 1499, category: 'ball', icon: '🎱', description: '国际比赛标准，酚醛树脂材质', sales: 892, hot: true },
-        { id: 4, name: 'Aramith水晶球套装', brand: 'Aramith', price: 2199, category: 'ball', icon: '🎱', description: '比利时进口，透明水晶材质', sales: 234 },
-        { id: 5, name: 'Master专业巧克粉', brand: 'Master', price: 39, category: 'accessory', icon: '🧊', description: '美国原装进口，防滑效果好', sales: 2341, hot: true },
-        { id: 6, name: '球杆延长器', brand: 'Generic', price: 199, originalPrice: 259, category: 'accessory', icon: '🔧', description: '铝合金材质，轻便耐用', sales: 567 },
-        { id: 7, name: 'Kamui台球手套', brand: 'Kamui', price: 89, category: 'accessory', icon: '🧤', description: '日本进口，透气舒适', sales: 1234 },
-        { id: 8, name: '专业比赛马甲', brand: 'Billiard Pro', price: 299, category: 'clothing', icon: '🎽', description: '修身剪裁，舒适透气', sales: 445, new: true }
+        { id: 1, name: 'LP专业斯诺克球杆', brand: 'LP', price: 2999, originalPrice: 3599, category: 'cue', icon: '🏏', description: '进口白蜡木杆身，专业级配置', sales: 328, hot: true, stock: 5 },
+        { id: 2, name: 'Predator美式九球杆', brand: 'Predator', price: 4599, category: 'cue', icon: '🏏', description: '碳纤维前节，低偏转技术', sales: 156, new: true, stock: 3 },
+        { id: 3, name: '星牌比赛用球', brand: '星牌', price: 1299, originalPrice: 1499, category: 'ball', icon: '🎱', description: '国际比赛标准，酚醛树脂材质', sales: 892, hot: true, stock: 12 },
+        { id: 4, name: 'Aramith水晶球套装', brand: 'Aramith', price: 2199, category: 'ball', icon: '🎱', description: '比利时进口，透明水晶材质', sales: 234, stock: 8 },
+        { id: 5, name: 'Master专业巧克粉', brand: 'Master', price: 39, category: 'accessory', icon: '🧊', description: '美国原装进口，防滑效果好', sales: 2341, hot: true, stock: 50 },
+        { id: 6, name: '球杆延长器', brand: 'Generic', price: 199, originalPrice: 259, category: 'accessory', icon: '🔧', description: '铝合金材质，轻便耐用', sales: 567, stock: 20 },
+        { id: 7, name: 'Kamui台球手套', brand: 'Kamui', price: 89, category: 'accessory', icon: '🧤', description: '日本进口，透气舒适', sales: 1234, stock: 30 },
+        { id: 8, name: '专业比赛马甲', brand: 'Billiard Pro', price: 299, category: 'clothing', icon: '🎽', description: '修身剪裁，舒适透气', sales: 445, new: true, stock: 0 }
       ]
     }
   },
@@ -247,10 +282,36 @@ export default {
       else if (this.sortBy === 'price-desc') result.sort((a, b) => b.price - a.price)
       return result
     },
-    cartTotal() { return this.cart.reduce((sum, item) => sum + item.price * item.qty, 0) },
-    cartItemCount() { return this.cart.reduce((sum, item) => sum + item.qty, 0) }
+    // 购物车数据来自全局持久化 store，跨页面/刷新保持一致
+    cartItems() { return cartStore.items },
+    cartCount() { return cartStore.count },
+    cartTotal() { return cartStore.totalAmount },
+    // 结算弹窗只展示本次快照，保证「购物车—订单—任务」是同一批商品
+    checkoutCount() { return this.checkoutItems.reduce((sum, item) => sum + item.qty, 0) },
+    checkoutTotal() { return this.checkoutItems.reduce((sum, item) => sum + item.price * item.qty, 0) },
+    orderItemCount() {
+      return (this.orderResult?.items || []).reduce((sum, item) => sum + item.qty, 0)
+    }
+  },
+  created() {
+    // 先按接口最新商品数据校正购物车（价格/库存/下架），再加载订单
+    this.loadInitialData()
   },
   methods: {
+    async loadInitialData() {
+      const result = await api.getProducts()
+      if (result.success && Array.isArray(result.data) && result.data.length > 0) {
+        this.products = result.data
+      }
+      cartStore.reconcile(this.products)
+      await this.loadOrders()
+    },
+    async loadOrders() {
+      const result = await api.getOrders()
+      if (result.success) {
+        this.orders = result.data
+      }
+    },
     getCategoryCount(catId) {
       if (catId === 'all') return this.products.length
       return this.products.filter(p => p.category === catId).length
@@ -262,6 +323,13 @@ export default {
       this.selectedProduct = product
       this.quantity = 1
       this.showDetailModal = true
+    },
+    changeDetailQty(delta) {
+      if (!this.selectedProduct) return
+      const stock = this.selectedProduct.stock ?? Infinity
+      const next = this.quantity + delta
+      if (next < 1 || next > stock) return
+      this.quantity = next
     },
     checkLoginRequired(action, product = null) {
       if (!isAuthenticated()) {
@@ -282,66 +350,192 @@ export default {
         this.showNotification('success', '已加入购物车', `${this.selectedProduct.name} x${this.quantity}`)
         this.showDetailModal = false
       } else if (this.pendingAction === 'buyNow') {
-        this.cart = [{ ...this.selectedProduct, qty: this.quantity }]
-        this.showDetailModal = false
-        this.showCheckoutModal = true
+        this.startBuyNow()
       } else if (this.pendingAction === 'checkout') {
-        this.showCartModal = false
-        this.showCheckoutModal = true
+        this.startCheckout()
       }
       this.pendingAction = null
       this.pendingProduct = null
     },
     quickAddToCart(product) {
       if (!this.checkLoginRequired('quickAdd', product)) return
-      this.addToCart(product, 1)
-      this.showNotification('success', '已加入购物车', product.name)
+      const result = this.addToCart(product, 1)
+      if (result) this.showNotification('success', '已加入购物车', product.name)
     },
     addToCartFromDetail() {
       if (!this.checkLoginRequired('addFromDetail')) return
-      this.addToCart(this.selectedProduct, this.quantity)
+      const result = this.addToCart(this.selectedProduct, this.quantity)
+      if (!result) return
       this.showNotification('success', '已加入购物车', `${this.selectedProduct.name} x${this.quantity}`)
       this.showDetailModal = false
     },
+    /**
+     * 加入购物车，统一经过库存钳制
+     * @returns {boolean} 是否加入成功
+     */
     addToCart(product, qty) {
-      const existing = this.cart.find(item => item.id === product.id)
-      if (existing) { existing.qty += qty }
-      else { this.cart.push({ ...product, qty }) }
+      if (!product || product.stock <= 0) {
+        this.showNotification('warning', '无法加入', '该商品已售罄')
+        return false
+      }
+      const result = cartStore.add(product, qty)
+      if (!result.ok) {
+        if (result.reason === 'stock') {
+          this.showNotification('warning', '库存不足', `该商品最多可购买 ${result.max} 件`)
+        }
+        return false
+      }
+      return true
     },
-    removeFromCart(index) { this.cart.splice(index, 1) },
+    isCartQtyMax(item) {
+      return Number.isInteger(item.stock) && item.qty >= item.stock
+    },
+    increaseCartQty(item) {
+      if (this.isCartQtyMax(item)) {
+        this.showNotification('warning', '库存不足', `该商品最多可购买 ${item.stock} 件`)
+        return
+      }
+      cartStore.increase(item.id)
+    },
+    decreaseCartQty(item) {
+      cartStore.decrease(item.id)
+    },
+    /** 按商品 id 移除，避免按索引连续删除时错位 */
+    removeFromCart(productId) {
+      cartStore.remove(productId)
+    },
+    clearCart() {
+      cartStore.clear()
+    },
+    openCartModal() {
+      // 打开前以接口最新库存校正一次，避免展示旧数量
+      cartStore.reconcile(this.products)
+      this.showCartModal = true
+    },
     buyNow() {
       if (!this.checkLoginRequired('buyNow')) return
-      this.cart = [{ ...this.selectedProduct, qty: this.quantity }]
+      this.startBuyNow()
+    },
+    /** 立即购买：只把当前商品作为本次结算快照，不覆盖购物车 */
+    startBuyNow() {
+      const product = this.products.find(p => p.id === this.selectedProduct?.id) || this.selectedProduct
+      if (!product || product.stock <= 0) {
+        this.showNotification('warning', '无法购买', '该商品已售罄')
+        return
+      }
+      const qty = Math.min(Math.max(1, this.quantity), product.stock)
+      this.checkoutSource = 'buyNow'
+      this.checkoutItems = [{ ...product, qty }]
+      this.checkoutRequestId = null
+      this.submitError = ''
       this.showDetailModal = false
       this.showCheckoutModal = true
     },
     checkout() {
       if (!this.checkLoginRequired('checkout')) return
+      this.startCheckout()
+    },
+    /** 购物车结算：对当前购物车拍一次快照 */
+    startCheckout() {
+      cartStore.reconcile(this.products)
+      if (cartStore.isEmpty) {
+        this.showNotification('warning', '购物车是空的', '请先选择要购买的商品')
+        return
+      }
+      this.checkoutSource = 'cart'
+      this.checkoutItems = cartStore.items.map(item => ({ ...item }))
+      this.checkoutRequestId = null
+      this.submitError = ''
       this.showCartModal = false
       this.showCheckoutModal = true
     },
+    /**
+     * 确认支付：
+     * - submitting 防重入 + 弹窗按钮禁用，杜绝重复支付
+     * - 下单前用接口最新库存再校验一次
+     * - 失败/中断时保留购物车与弹窗，可直接重试（同 requestId 幂等）
+     */
     async confirmCheckout() {
-      this.checkoutLoading = true
-      await new Promise(resolve => setTimeout(resolve, 1500))
-      const order = {
-        orderNo: 'SP' + Date.now().toString().slice(-8),
-        amount: this.cartTotal,
-        items: [...this.cart],
-        status: 'paid',
-        createTime: new Date().toLocaleString()
+      if (this.submitting) return
+      if (this.checkoutItems.length === 0) {
+        this.showCheckoutModal = false
+        this.showNotification('warning', '购物车是空的', '请先选择要购买的商品')
+        return
       }
+
+      // 下单前校验最新库存（页面可能停留较久，库存已被其他操作扣减）
+      for (const item of this.checkoutItems) {
+        const product = this.products.find(p => p.id === item.id)
+        if (!product || product.stock <= 0) {
+          this.abortCheckoutWithError(`商品「${item.name}」已售罄，请调整购物车`)
+          return
+        }
+        if (item.qty > product.stock) {
+          this.abortCheckoutWithError(`商品「${item.name}」库存不足，仅剩 ${product.stock} 件`)
+          return
+        }
+      }
+
+      this.submitting = true
+      this.submitError = ''
+      // 同一次结算重试时复用 requestId，保证中断后重试不会产生两笔订单
+      if (!this.checkoutRequestId) this.checkoutRequestId = genRequestId()
+
+      const result = await api.createOrder({
+        requestId: this.checkoutRequestId,
+        items: this.checkoutItems.map(item => ({ id: item.id, qty: item.qty }))
+      })
+
+      this.submitting = false
+
+      if (!result.success) {
+        // 支付中断/失败：购物车保留、弹窗保留、错误信息展示，用户可再次确认支付
+        this.submitError = result.error || '支付失败，请稍后重试'
+        this.showNotification('error', '支付失败', this.submitError)
+        return
+      }
+
+      const order = result.data
       this.orderResult = order
-      this.orders.unshift(order) // 添加到订单列表
-      this.cart = []
-      
-      // 添加到任务中心
-      taskStore.addOrderTask(order)
-      
-      this.checkoutLoading = false
+      // 本地库存跟随接口扣减结果更新，并校正购物车中可能超限的数量
+      this.applyStockDeduction(order.items)
+      if (this.checkoutSource === 'cart') {
+        cartStore.clear()
+      } else {
+        cartStore.reconcile(this.products)
+      }
+      this.checkoutItems = []
+      this.checkoutRequestId = null
       this.showCheckoutModal = false
       this.showSuccessModal = true
-      
-      this.showNotification('info', '已添加到任务中心', `您可以在任务中心查看并管理此订单`)
+      await this.loadOrders()
+    },
+    abortCheckoutWithError(message) {
+      this.submitError = message
+      this.showCheckoutModal = false
+      this.showCartModal = this.checkoutSource === 'cart'
+      cartStore.reconcile(this.products)
+      this.showNotification('error', '无法结算', message)
+    },
+    applyStockDeduction(orderedItems) {
+      for (const ordered of orderedItems) {
+        const product = this.products.find(p => p.id === ordered.id)
+        if (product) {
+          product.stock = Math.max(0, (product.stock ?? 0) - ordered.qty)
+          product.sales = (product.sales || 0) + ordered.qty
+        }
+      }
+    },
+    orderStatusText(status) {
+      const map = {
+        pending_payment: '待付款',
+        paid: '已支付',
+        pending_shipment: '待发货',
+        shipped: '已发货',
+        completed: '已完成',
+        cancelled: '已取消'
+      }
+      return map[status] || status
     },
     showNotification(type, title, message) {
       this.toastType = type
@@ -349,8 +543,9 @@ export default {
       this.toastMessage = message
       this.showToast = true
     },
-    viewOrderDetail() {
+    async viewOrderDetail() {
       this.showSuccessModal = false
+      await this.loadOrders()
       this.showOrdersModal = true
     }
   }
@@ -388,6 +583,10 @@ export default {
 .badge { padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.7rem; font-weight: 600; }
 .badge.hot { background: rgba(255, 107, 107, 0.2); color: #ff6b6b; }
 .badge.new { background: rgba(0, 217, 165, 0.2); color: var(--primary); }
+.badge.out { background: rgba(138, 138, 154, 0.25); color: var(--text-secondary); }
+.product-card.sold-out { opacity: 0.7; }
+.product-card.sold-out .image-placeholder { filter: grayscale(0.6); }
+.stock-out { color: #ff6b6b !important; }
 .quick-add { position: absolute; bottom: 0.75rem; right: 0.75rem; width: 40px; height: 40px; background: var(--primary); border: none; border-radius: 10px; color: var(--bg-dark); cursor: pointer; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(10px); transition: all 0.3s; }
 .product-card:hover .quick-add { opacity: 1; transform: translateY(0); }
 .quick-add:hover { transform: scale(1.1); }
@@ -443,6 +642,14 @@ export default {
 .item-info { flex: 1; }
 .item-info h4 { font-size: 0.9rem; font-weight: 500; margin-bottom: 0.2rem; }
 .item-brand { font-size: 0.75rem; color: var(--text-muted); }
+.cart-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 0 1rem 0.75rem; font-size: 0.85rem; color: var(--text-secondary); }
+.btn-clear-cart { background: transparent; border: none; color: var(--text-muted); font-size: 0.8rem; cursor: pointer; transition: color 0.2s; }
+.btn-clear-cart:hover { color: #ff6b6b; }
+.cart-qty-controls { display: flex; align-items: center; background: rgba(255, 255, 255, 0.05); border-radius: 8px; overflow: hidden; }
+.cart-qty-controls button { width: 30px; height: 30px; background: transparent; border: none; color: var(--text-primary); font-size: 1rem; cursor: pointer; transition: background 0.2s; }
+.cart-qty-controls button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+.cart-qty-controls button:disabled { opacity: 0.3; cursor: not-allowed; }
+.cart-qty-controls span { min-width: 34px; text-align: center; font-weight: 600; font-size: 0.85rem; }
 .item-qty { font-size: 0.85rem; color: var(--text-secondary); }
 .item-price { font-family: 'Space Grotesk', sans-serif; font-weight: 600; color: var(--primary); }
 .remove-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 0.4rem; border-radius: 6px; transition: all 0.3s; }
@@ -450,11 +657,22 @@ export default {
 .remove-btn svg { width: 16px; height: 16px; }
 .cart-empty { padding: 3rem; text-align: center; color: var(--text-muted); }
 .empty-icon { font-size: 4rem; margin-bottom: 1rem; opacity: 0.5; }
+.cart-empty .empty-tip { font-size: 0.8rem; margin-top: 0.25rem; opacity: 0.7; }
+.checkout-goods { display: flex; flex-direction: column; gap: 0.5rem; max-height: 180px; overflow-y: auto; margin-bottom: 0.5rem; }
+.checkout-goods-item { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; background: rgba(255, 255, 255, 255, 0.03); padding: 0.5rem 0.75rem; border-radius: 8px; }
+.checkout-goods-item .item-icon { font-size: 1.1rem; }
+.checkout-goods-item .goods-name { flex: 1; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.checkout-goods-item .goods-qty { color: var(--text-muted); font-size: 0.8rem; }
+.checkout-goods-item .goods-price { font-family: 'Space Grotesk', sans-serif; font-weight: 600; color: var(--primary); }
+.checkout-error { color: #ff6b6b; font-size: 0.8rem; margin-top: 0.25rem; }
 .cart-footer { padding: 1.5rem; border-top: 1px solid var(--border); }
 .cart-summary { display: flex; justify-content: space-between; margin-bottom: 1rem; color: var(--text-secondary); font-size: 0.9rem; }
 .cart-summary .total strong { font-family: 'Space Grotesk', sans-serif; font-size: 1.25rem; color: var(--primary); }
 .btn-checkout { width: 100%; background: var(--gradient-1); border: none; color: var(--bg-dark); padding: 1rem; font-size: 1rem; font-weight: 600; border-radius: 12px; cursor: pointer; transition: all 0.3s; }
 .btn-checkout:hover { box-shadow: 0 8px 30px var(--primary-glow); }
+.btn-checkout:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+.btn-add-cart:disabled, .btn-buy-now:disabled { opacity: 0.5; cursor: not-allowed; }
+.qty-controls button:disabled { opacity: 0.3; cursor: not-allowed; }
 .checkout-info, .success-info { display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem; background: rgba(255, 255, 255, 0.03); border-radius: 12px; text-align: left; }
 .info-row { display: flex; justify-content: space-between; font-size: 0.9rem; }
 .info-row .label { color: var(--text-secondary); }
@@ -474,7 +692,12 @@ export default {
 .order-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
 .order-no { font-family: monospace; font-size: 0.85rem; color: var(--text-secondary); }
 .order-status { padding: 0.25rem 0.6rem; border-radius: 12px; font-size: 0.7rem; font-weight: 600; }
-.order-status.paid { background: rgba(0, 217, 165, 0.15); color: var(--primary); }
+.order-status.paid,
+.order-status.pending_shipment { background: rgba(0, 217, 165, 0.15); color: var(--primary); }
+.order-status.pending_payment { background: rgba(255, 193, 7, 0.15); color: #ffc107; }
+.order-status.shipped { background: rgba(79, 172, 254, 0.15); color: #4facfe; }
+.order-status.completed { background: rgba(108, 117, 125, 0.15); color: #8a8a9a; }
+.order-status.cancelled { background: rgba(255, 107, 107, 0.15); color: #ff6b6b; }
 .order-items { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; }
 .order-item { display: flex; align-items: center; gap: 0.4rem; background: rgba(255, 255, 255, 0.05); padding: 0.4rem 0.6rem; border-radius: 8px; font-size: 0.8rem; }
 .item-icon { font-size: 1rem; }

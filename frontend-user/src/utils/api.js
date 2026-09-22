@@ -247,20 +247,144 @@ function handleBookings(options) {
 
 /**
  * 处理订单相关请求
- * POST: 创建新订单
+ * GET: 返回所有商城订单（与任务中心共用同一份数据，保证订单/任务对应同一批商品）
+ * POST: 创建订单。以接口侧商品主数据为准重新计算商品快照与金额，
+ *       校验库存，并对重复提交（同一 requestId）做幂等处理。
  */
 function handleOrders(options) {
   if (options.method === 'POST') {
     const body = JSON.parse(options.body || '{}')
-    const orderNo = 'SP' + Date.now().toString().slice(-8)
-    logger.info('Mock order created', { orderNo })
-    return {
-      orderNo,
-      ...body,
-      status: 'paid'
+
+    // 兼容历史字段：productId -> id, quantity -> qty
+    const rawItems = Array.isArray(body.items) ? body.items : []
+    if (rawItems.length > 0) {
+      body.items = rawItems.map(item => ({
+        id: item.id ?? item.productId,
+        qty: item.qty ?? item.quantity
+      }))
     }
+    // 未传 requestId 时由接口侧生成，保证每笔订单都具备幂等键
+    body.requestId = body.requestId || ('REQ-SRV-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8))
+
+    // 重复支付/重复点击：同一 requestId 直接返回首次创建结果，不再生成新订单
+    const duplicated = requestIndex.get(body.requestId)
+    if (duplicated) return duplicated
+
+    const requestedItems = Array.isArray(body.items) ? body.items : []
+    if (requestedItems.length === 0) {
+      throw new Error('购物车是空的，无法下单')
+    }
+
+    // 以接口主数据为准，逐项校验商品状态与库存，并按接口价格计算金额，
+    // 防止页面上的旧数量/旧价格被带入订单
+    const items = []
+    for (const reqItem of requestedItems) {
+      const product = productMap.get(Number(reqItem.id))
+      const qty = Math.floor(Number(reqItem.qty))
+
+      if (!product) {
+        throw new Error(`商品不存在或已下架`)
+      }
+      if (!Number.isFinite(qty) || qty <= 0) {
+        throw new Error(`商品「${product.name}」数量不合法`)
+      }
+      const stock = stockMap.get(product.id) || 0
+      if (qty > stock) {
+        throw new Error(`商品「${product.name}」库存不足，仅剩 ${stock} 件`)
+      }
+
+      items.push({
+        id: product.id,
+        name: product.name,
+        brand: product.brand,
+        price: product.price,
+        icon: product.icon,
+        qty
+      })
+    }
+
+    // 校验通过后统一扣减库存
+    items.forEach(item => stockMap.set(item.id, (stockMap.get(item.id) || 0) - item.qty))
+
+    const orderNo = generateOrderNo()
+    const amount = items.reduce((sum, item) => sum + item.price * item.qty, 0)
+    const createTime = formatDateTime(new Date())
+    const status = body.status === 'pending_payment' ? 'pending_payment' : 'paid'
+
+    const order = {
+      orderNo,
+      items,
+      amount,
+      status,
+      createTime,
+      requestId: body.requestId
+    }
+
+    // 任务记录与订单使用同一批商品快照
+    taskStore.addOrderTask({
+      orderNo,
+      items,
+      amount,
+      createTime,
+      status: status === 'paid' ? 'pending_shipment' : 'pending_payment',
+      requestId: body.requestId
+    })
+
+    requestIndex.set(body.requestId, order)
+    logger.info('Mock order created', { orderNo, itemCount: items.length, amount })
+    return order
   }
-  return []
+
+  return listOrders()
+}
+
+/**
+ * 从任务中心读取商城订单并转换为订单接口的返回结构，
+ * 保证「我的订单」与「任务中心」始终是同一批商品、同一金额。
+ */
+function listOrders() {
+  return taskStore
+    .getAll()
+    .filter(task => task.type === 'order')
+    .map(task => ({
+      orderNo: task.extra?.orderNo || task.id,
+      items: Array.isArray(task.extra?.items)
+        ? task.extra.items.map(item => ({ ...item }))
+        : [],
+      amount: task.amount,
+      status: taskStatusToOrderStatus(task.status),
+      createTime: task.extra?.createTime || task.createdAt,
+      requestId: task.extra?.requestId
+    }))
+    .sort((a, b) => (a.createTime < b.createTime ? 1 : -1))
+}
+
+function taskStatusToOrderStatus(taskStatus) {
+  const map = {
+    pending_payment: 'pending_payment',
+    pending_shipment: 'paid',
+    shipped: 'shipped',
+    completed: 'completed',
+    cancelled: 'cancelled'
+  }
+  return map[taskStatus] || taskStatus
+}
+
+/**
+ * 生成不重复的订单号：SP + 时间戳(11位) + 递增序号(3位)，
+ * 即使快速连续点击也不会撞号
+ */
+let orderSeq = 0
+function generateOrderNo() {
+  orderSeq = (orderSeq + 1) % 1000
+  const seq = String(orderSeq).padStart(3, '0')
+  return 'SP' + Date.now().toString() + seq
+}
+
+function formatDateTime(date) {
+  const pad = n => n.toString().padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
 /**
@@ -283,8 +407,8 @@ function handleUserTasks(options) {
       const result = taskStore.markAsPaid(taskId)
       return { success: !!result, message: result ? '支付成功' : '支付失败' }
     } else if (action === 'cancel') {
-      const result = taskStore.remove(taskId)
-      return { success: result, message: result ? '取消成功' : '取消失败' }
+      const result = taskStore.cancelTask(taskId)
+      return { success: !!result, message: result ? '取消成功' : '取消失败' }
     }
     
     return { success: true, message: '操作成功' }
@@ -341,10 +465,16 @@ const mockData = {
     { id: 2, name: '周末九球挑战赛', type: '美式九球', date: '2026-02-14', location: '主馆B区', prize: 10000, fee: 100, participants: 16, maxParticipants: 16, status: 'ongoing' }
   ],
   
-  // 商品列表
+  // 商品列表（stock 为可变库存，下单成功后会扣减）
   products: [
-    { id: 1, name: 'LP专业斯诺克球杆', brand: 'LP', price: 2999, originalPrice: 3599, category: 'cue', icon: '🏏', description: '进口白蜡木杆身', sales: 328, hot: true },
-    { id: 2, name: '星牌比赛用球', brand: '星牌', price: 1299, originalPrice: 1499, category: 'ball', icon: '🎱', description: '国际比赛标准', sales: 892, hot: true }
+    { id: 1, name: 'LP专业斯诺克球杆', brand: 'LP', price: 2999, originalPrice: 3599, category: 'cue', icon: '🏏', description: '进口白蜡木杆身，专业级配置', sales: 328, hot: true, stock: 5 },
+    { id: 2, name: 'Predator美式九球杆', brand: 'Predator', price: 4599, originalPrice: null, category: 'cue', icon: '🏏', description: '碳纤维前节，低偏转技术', sales: 156, new: true, stock: 3 },
+    { id: 3, name: '星牌比赛用球', brand: '星牌', price: 1299, originalPrice: 1499, category: 'ball', icon: '🎱', description: '国际比赛标准，酚醛树脂材质', sales: 892, hot: true, stock: 12 },
+    { id: 4, name: 'Aramith水晶球套装', brand: 'Aramith', price: 2199, originalPrice: null, category: 'ball', icon: '🎱', description: '比利时进口，透明水晶材质', sales: 234, stock: 8 },
+    { id: 5, name: 'Master专业巧克粉', brand: 'Master', price: 39, originalPrice: null, category: 'accessory', icon: '🧊', description: '美国原装进口，防滑效果好', sales: 2341, hot: true, stock: 50 },
+    { id: 6, name: '球杆延长器', brand: 'Generic', price: 199, originalPrice: 259, category: 'accessory', icon: '🔧', description: '铝合金材质，轻便耐用', sales: 567, stock: 20 },
+    { id: 7, name: 'Kamui台球手套', brand: 'Kamui', price: 89, originalPrice: null, category: 'accessory', icon: '🧤', description: '日本进口，透气舒适', sales: 1234, stock: 30 },
+    { id: 8, name: '专业比赛马甲', brand: 'Billiard Pro', price: 299, originalPrice: null, category: 'clothing', icon: '🎽', description: '修身剪裁，舒适透气', sales: 445, new: true, stock: 0 }
   ],
   
   // 预约记录
@@ -353,6 +483,13 @@ const mockData = {
     { id: 2, orderNo: 'BK20260002', tableName: '1号球桌 - 斯诺克', date: '2026-02-10', time: '19:00 - 21:00', status: 'completed' }
   ]
 }
+
+// 商品主数据索引与运行时库存（下单扣减；刷新页面后恢复初始库存）
+const productMap = new Map(mockData.products.map(p => [p.id, p]))
+const stockMap = new Map(mockData.products.map(p => [p.id, p.stock]))
+
+// 幂等请求索引：requestId -> 已创建订单，防止重复支付产生重复订单
+const requestIndex = new Map()
 
 // ==================== 导出API方法 ====================
 
@@ -451,12 +588,20 @@ export const api = {
   /**
    * 创建商品订单
    * @param {Object} data - 订单信息
-   * @param {Array} data.items - 商品列表
+   * @param {Array} data.items - 商品列表 [{ id, qty }]
+   * @param {string} [data.requestId] - 前端生成的请求标识，用于重复支付幂等
+   * @param {string} [data.status] - 支付状态，默认 paid；可传 pending_payment
    */
-  createOrder: (data) => request('/orders', { 
-    method: 'POST', 
-    body: JSON.stringify(data) 
+  createOrder: (data) => request('/orders', {
+    method: 'POST',
+    body: JSON.stringify(data)
   }),
+
+  /**
+   * 获取商品订单列表
+   * @returns {Promise<{success: boolean, data: Array}>}
+   */
+  getOrders: () => request('/orders'),
   
   // ========== 用户模块 ==========
   
@@ -502,3 +647,12 @@ export const api = {
 }
 
 export default api
+
+/**
+ * 仅供测试使用：重置运行时库存与幂等索引
+ */
+export function __resetMockState() {
+  stockMap.clear()
+  mockData.products.forEach(p => stockMap.set(p.id, p.stock))
+  requestIndex.clear()
+}

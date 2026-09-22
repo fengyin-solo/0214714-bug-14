@@ -121,7 +121,7 @@
 
     <Toast v-model="showToast" :type="toastType" :title="toastTitle" :message="toastMessage" />
 
-    <LoginModal v-model="showLoginModal" @login-success="onLoginSuccess" />
+    <LoginModal v-model="showLoginModal" @success="onLoginSuccess" />
   </div>
 </template>
 
