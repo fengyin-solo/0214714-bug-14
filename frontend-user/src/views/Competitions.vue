@@ -198,6 +198,7 @@ export default {
       }
     },
     async confirmJoin() {
+      if (this.joinLoading) return
       this.joinLoading = true
       await new Promise(resolve => setTimeout(resolve, 1500))
       const regInfo = { 

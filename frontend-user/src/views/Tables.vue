@@ -313,6 +313,7 @@ export default {
       }
     },
     async confirmBooking() {
+      if (this.bookingLoading) return
       this.bookingLoading = true
       
       // Simulate API call

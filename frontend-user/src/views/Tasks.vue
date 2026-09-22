@@ -280,7 +280,8 @@ export default {
       return this.allTasks.filter(task => task.status !== 'completed' && task.status !== 'cancelled')
     },
     completedTasks() {
-      return this.allTasks.filter(task => task.status === 'completed')
+      // 已完成与已取消都归入「已完成」页签，取消订单不会丢失记录
+      return this.allTasks.filter(task => task.status === 'completed' || task.status === 'cancelled')
     },
     pendingCount() {
       return this.pendingTasks.length
@@ -346,7 +347,7 @@ export default {
     },
     navigateToRoute(route, actionKey, task) {
       logger.info('Navigate to business page', { route, actionKey, taskId: task.id, type: task.type })
-      
+
       const query = {}
       if (task.extra) {
         if (task.type === 'booking' && task.extra.tableId) {
@@ -360,9 +361,11 @@ export default {
         }
         if (task.type === 'order' && task.extra.orderNo) {
           query.orderNo = task.extra.orderNo
+          // 跨页面联动：待付款订单继续支付、已完成订单再次购买
+          query.action = actionKey
         }
       }
-      
+
       this.$router.push({ path: route, query })
     },
     openPayModal() {
@@ -376,15 +379,22 @@ export default {
     },
     async confirmPay() {
       if (!this.selectedTask) return
+      // 防重复支付：支付中忽略后续点击；非待付款任务直接提示
+      if (this.payLoading) return
+      if (this.selectedTask.status !== 'pending_payment') {
+        this.showPayModal = false
+        this.showNotification('warning', '无需重复支付', '该任务已支付或已取消')
+        return
+      }
       this.payLoading = true
-      
+
       await new Promise(resolve => setTimeout(resolve, 1000))
-      
+
       const updatedTask = taskStore.markAsPaid(this.selectedTask.id)
-      
+
       this.payLoading = false
       this.showPayModal = false
-      
+
       if (updatedTask) {
         this.refreshTasks()
         this.successTitle = '支付成功'
@@ -392,23 +402,24 @@ export default {
         this.showSuccessModal = true
         logger.info('Payment successful', { taskId: this.selectedTask.id, amount: this.selectedTask.amount })
       } else {
-        this.showNotification('error', '支付失败', '请稍后重试')
+        this.showNotification('error', '支付失败', '订单状态已变更，请刷新后重试')
       }
     },
     async confirmCancel() {
-      if (!this.selectedTask) return
+      if (!this.selectedTask || this.cancelLoading) return
       this.cancelLoading = true
-      
+
       await new Promise(resolve => setTimeout(resolve, 800))
-      
-      const result = taskStore.remove(this.selectedTask.id)
-      
+
+      // 取消任务/订单：保留记录并标记为「已取消」，不再物理删除
+      const result = taskStore.cancelTask(this.selectedTask.id)
+
       this.cancelLoading = false
       this.showCancelModal = false
-      
+
       if (result) {
         this.refreshTasks()
-        this.showNotification('success', '取消成功', '任务已取消')
+        this.showNotification('success', '取消成功', '记录已保留，可在已完成列表中查看')
         logger.info('Task cancelled', { taskId: this.selectedTask.id })
       } else {
         this.showNotification('error', '取消失败', '请稍后重试')

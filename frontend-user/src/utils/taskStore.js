@@ -166,7 +166,13 @@ function getDefaultTasks() {
       amount: 2999,
       status: 'pending_shipment',
       createdAt: formatDate(new Date(Date.now() - 172800000)),
-      extra: { orderNo: 'SP' + Date.now().toString().slice(-8), productId: 1 }
+      extra: {
+        orderNo: 'SP' + Date.now().toString().slice(-8),
+        items: [
+          { id: 1, productId: 1, name: 'LP专业斯诺克球杆', brand: 'LP', price: 2999, icon: '🏏', qty: 1 }
+        ],
+        createTime: formatDate(new Date(Date.now() - 172800000))
+      }
     }
   ]
 }
@@ -210,7 +216,8 @@ export const taskStore = {
       return tasks.filter(t => t.status !== 'completed' && t.status !== 'cancelled')
     }
     if (status === 'completed') {
-      return tasks.filter(t => t.status === 'completed')
+      // 已取消记录保留在已完成列表中，避免取消后订单丢失
+      return tasks.filter(t => t.status === 'completed' || t.status === 'cancelled')
     }
     return tasks
   },
@@ -317,28 +324,93 @@ export const taskStore = {
     })
   },
 
+  /**
+   * 商城订单任务（幂等）
+   *
+   * 以 orderNo 为唯一键：同一订单重复提交（重复支付/重试）不会产生第二条任务，
+   * 保证「订单结果与任务记录」一一对应。
+   * items 深拷贝快照，后续购物车加减不影响已生成记录。
+   */
   addOrderTask(order) {
-    return this.add({
+    const tasks = loadTasks()
+    const items = JSON.parse(JSON.stringify(order.items || []))
+    const orderTaskData = {
       type: 'order',
-      title: order.items.map(i => i.name).join('、'),
-      subtitle: '已下单，待发货',
+      title: items.map(i => i.name).join('、'),
+      subtitle: order.status === 'pending_payment' ? '等待付款' : '已下单，待发货',
       amount: order.amount,
-      status: 'pending_shipment',
+      status: order.status === 'pending_payment' ? 'pending_payment' : 'pending_shipment',
       extra: {
         orderNo: order.orderNo,
-        items: order.items,
+        items,
         createTime: order.createTime
       }
+    }
+
+    const existing = tasks.find(
+      t => t.type === 'order' && t.extra && t.extra.orderNo === order.orderNo
+    )
+    if (existing) {
+      Object.assign(existing, orderTaskData)
+      saveTasks(tasks)
+      logger.info('订单任务已更新（幂等）', order.orderNo)
+      return enrichTask(existing)
+    }
+
+    return this.add(orderTaskData)
+  },
+
+  /**
+   * 按订单号查询订单任务
+   */
+  getOrderTask(orderNo) {
+    const task = loadTasks().find(
+      t => t.type === 'order' && t.extra && t.extra.orderNo === orderNo
+    )
+    return task ? enrichTask(task) : null
+  },
+
+  /**
+   * 查询所有商城订单任务（新订单在前）
+   */
+  getOrders() {
+    return this.getAll().filter(t => t.type === 'order')
+  },
+
+  /**
+   * 取消订单：保留记录并标记为「已取消」，不再物理删除，
+   * 取消后记录进入已完成列表，不会丢失。
+   */
+  cancelTask(taskId, reason = '用户已取消') {
+    const task = this.getById(taskId)
+    if (!task) return null
+    const subtitles = {
+      booking: '预约已取消',
+      course: '报名已取消',
+      competition: '报名已取消',
+      order: '订单已取消'
+    }
+    return this.update(taskId, {
+      status: 'cancelled',
+      subtitle: subtitles[task.type] || reason
     })
   },
 
+  /**
+   * 支付：仅待付款任务可支付，避免重复支付已支付/已取消的订单。
+   * 支付中断后任务仍是 pending_payment，可继续付款。
+   */
   markAsPaid(taskId) {
     const task = this.getById(taskId)
     if (!task) return null
-    
+    if (task.status !== 'pending_payment') {
+      logger.warn('任务不是待付款状态，忽略重复支付', { taskId, status: task.status })
+      return null
+    }
+
     let newStatus = 'upcoming'
     let newSubtitle = '支付成功'
-    
+
     if (task.type === 'order') {
       newStatus = 'pending_shipment'
       newSubtitle = '支付成功，待发货'
@@ -347,7 +419,7 @@ export const taskStore = {
     } else if (task.type === 'booking') {
       newSubtitle = '支付成功，等待使用'
     }
-    
+
     return this.update(taskId, { status: newStatus, subtitle: newSubtitle })
   },
 

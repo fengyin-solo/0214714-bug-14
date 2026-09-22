@@ -349,6 +349,7 @@ export default {
       }
     },
     async confirmEnroll() {
+      if (this.enrollLoading) return
       this.enrollLoading = true
       
       await new Promise(resolve => setTimeout(resolve, 1500))
